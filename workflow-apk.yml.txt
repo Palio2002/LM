@@ -1,0 +1,90 @@
+name: Gerar APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - 'catalogo/**'
+      - '**.md'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gerar-apk
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Ligar o app a este repositório
+        run: |
+          sed -i "s#__REPO__#${GITHUB_REPOSITORY}#; s#__BRANCH__#${GITHUB_REF_NAME}#; s#__VERSAO__#${GITHUB_RUN_NUMBER}#" www/config.js
+          cat www/config.js
+
+      - name: Instalar dependências
+        run: npm install --no-audit --no-fund
+
+      - name: Criar o projeto Android
+        run: npx cap add android
+
+      - name: Ícone e tela de abertura
+        continue-on-error: true
+        run: npx capacitor-assets generate --android
+
+      - name: Copiar o app para o projeto Android
+        run: npx cap sync android
+
+      - name: Compilar
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Assinar o APK
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_SENHA: ${{ secrets.KEYSTORE_SENHA }}
+          KS_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+        run: |
+          set -e
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/chave.keystore"
+            KS="$RUNNER_TEMP/chave.keystore"; SENHA="$KS_SENHA"; ALIAS="${KS_ALIAS:-leitor}"
+            echo "Assinando com a sua chave privada (segredos do repositório)."
+          else
+            KS="signing/leitor-chave.keystore"; SENHA="leitor-marxista"; ALIAS="leitor"
+            echo "Assinando com a chave padrão do projeto (veja o README, seção Avançado)."
+          fi
+          APK_ENTRADA=$(ls android/app/build/outputs/apk/release/*.apk | head -n 1)
+          "$BT/zipalign" -p -f 4 "$APK_ENTRADA" "$RUNNER_TEMP/alinhado.apk"
+          "$BT/apksigner" sign --ks "$KS" --ks-pass "pass:$SENHA" --ks-key-alias "$ALIAS" --out leitor-marxista.apk "$RUNNER_TEMP/alinhado.apk"
+          "$BT/apksigner" verify --print-certs leitor-marxista.apk
+
+      - name: Guardar o APK na execução
+        uses: actions/upload-artifact@v4
+        with:
+          name: leitor-marxista-apk
+          path: leitor-marxista.apk
+
+      - name: Publicar em Releases (para baixar pelo celular)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "apk-${GITHUB_RUN_NUMBER}" leitor-marxista.apk \
+            --title "Leitor Marxista (compilação ${GITHUB_RUN_NUMBER})" \
+            --notes "Baixe o arquivo leitor-marxista.apk neste celular e abra para instalar." \
+            --latest

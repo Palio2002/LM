@@ -1,0 +1,14 @@
+{
+  "name": "leitor-marxista",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Leitor do Arquivo Marxista na Internet (marxists.org), com marcações, obras em capítulos e catálogo editável só pelo dono.",
+  "dependencies": {
+    "@capacitor/android": "^7.4.0",
+    "@capacitor/core": "^7.4.0"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^7.4.0"
+  }
+}

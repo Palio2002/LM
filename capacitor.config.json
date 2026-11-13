@@ -1,0 +1,13 @@
+{
+  "appId": "app.leitormarxista.leitor",
+  "appName": "Leitor Marxista",
+  "webDir": "www",
+  "backgroundColor": "#f5f5f2",
+  "android": {
+    "allowMixedContent": false,
+    "adjustMarginsForEdgeToEdge": "auto"
+  },
+  "plugins": {
+    "CapacitorHttp": { "enabled": true }
+  }
+}
