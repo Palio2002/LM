@@ -1,0 +1,115 @@
+name: Gerar APK
+
+# Roda sozinho quando um .zip novo é enviado para a raiz do repositório, ou quando você manda (Run workflow).
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - '*.zip'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gerar-apk
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Abrir o projeto (.zip enviado, ou arquivos soltos)
+        run: |
+          N=$(ls -1 ./*.zip 2>/dev/null | wc -l)
+          if [ "$N" -gt 1 ]; then
+            echo "::error::Há mais de um .zip na raiz do repositório. Deixe só um (apague os outros)."
+            ls -1 ./*.zip
+            exit 1
+          fi
+          if [ "$N" -eq 1 ]; then
+            rm -rf _zip; mkdir _zip
+            unzip -oq ./*.zip -d _zip
+            PKG=$(find _zip -maxdepth 3 -name package.json -not -path '*/node_modules/*' | head -n 1)
+            if [ -z "$PKG" ]; then
+              echo "::error::Não achei o package.json dentro do .zip. Envie o zip original, sem mexer nele."
+              exit 1
+            fi
+            cp -a "$(dirname "$PKG")"/. .
+            rm -rf _zip
+          elif [ ! -f package.json ]; then
+            echo "::error::Não achei o projeto. Envie o arquivo leitor-marxista-apk.zip para a raiz do repositório."
+            exit 1
+          fi
+          test -f www/index.html || { echo "::error::Faltou www/index.html no projeto."; exit 1; }
+          ls -la
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Ligar o app a este repositório
+        run: |
+          sed -i "s#__REPO__#${GITHUB_REPOSITORY}#; s#__BRANCH__#${GITHUB_REF_NAME}#; s#__VERSAO__#${GITHUB_RUN_NUMBER}#" www/config.js
+          cat www/config.js
+
+      - name: Instalar dependências
+        run: npm install --no-audit --no-fund
+
+      - name: Criar o projeto Android
+        run: npx cap add android
+
+      - name: Ícone e tela de abertura
+        continue-on-error: true
+        run: npx capacitor-assets generate --android
+
+      - name: Copiar o app para o projeto Android
+        run: npx cap sync android
+
+      - name: Compilar
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Assinar o APK
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_SENHA: ${{ secrets.KEYSTORE_SENHA }}
+          KS_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+        run: |
+          set -e
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/chave.keystore"
+            KS="$RUNNER_TEMP/chave.keystore"; SENHA="$KS_SENHA"; ALIAS="${KS_ALIAS:-leitor}"
+            echo "Assinando com a sua chave privada (segredos do repositório)."
+          else
+            KS="signing/leitor-chave.keystore"; SENHA="leitor-marxista"; ALIAS="leitor"
+            echo "Assinando com a chave padrão do projeto (veja o README, seção Avançado)."
+          fi
+          APK_ENTRADA=$(ls android/app/build/outputs/apk/release/*.apk | head -n 1)
+          "$BT/zipalign" -p -f 4 "$APK_ENTRADA" "$RUNNER_TEMP/alinhado.apk"
+          "$BT/apksigner" sign --ks "$KS" --ks-pass "pass:$SENHA" --ks-key-alias "$ALIAS" --out leitor-marxista.apk "$RUNNER_TEMP/alinhado.apk"
+          "$BT/apksigner" verify --print-certs leitor-marxista.apk
+
+      - name: Guardar o APK na execução
+        uses: actions/upload-artifact@v4
+        with:
+          name: leitor-marxista-apk
+          path: leitor-marxista.apk
+
+      - name: Publicar em Releases (para baixar pelo celular)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "apk-${GITHUB_RUN_NUMBER}" leitor-marxista.apk \
+            --title "Leitor Marxista (compilação ${GITHUB_RUN_NUMBER})" \
+            --notes "Baixe o arquivo leitor-marxista.apk neste celular e abra para instalar." \
+            --latest
